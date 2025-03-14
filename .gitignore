@@ -1,0 +1,14 @@
+/build
+/dist
+/venv
+/.env
+/.vscode
+/.idea
+/.pytest_cache
+/.mypy_cache
+/.coverage
+/.pytest_cache
+/.coverage.*
+/*.spec
+__pycache__/version.cpython-39.pyc
+/__pycache__
