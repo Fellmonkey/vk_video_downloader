@@ -45,13 +45,64 @@ jobs:
       id: update_version
       run: python update_version.py patch
       
-    # Коммит обновленной версии
-    - name: Commit version update
+    # Получение описания релиза из файла CHANGELOG.md
+    - name: Parse changelog
+      id: changelog
+      run: |
+        # Читаем файл CHANGELOG.md и ищем раздел [Unreleased]
+        $CHANGELOG_CONTENT = Get-Content -Path CHANGELOG.md -Raw
+        
+        # Находим раздел [Unreleased]
+        if ($CHANGELOG_CONTENT -match '(?s)## \[Unreleased\](.*?)(?:\r?\n## |$)') {
+          $UNRELEASED_CONTENT = $matches[1].Trim()
+          
+          # Готовим описание релиза
+          $VERSION = "v${{ steps.update_version.outputs.new_version }}"
+          $RELEASE_DATE = Get-Date -Format "yyyy-MM-dd"
+          
+          # Формируем полное описание
+          $RELEASE_NOTES = "## Что нового в версии $VERSION ($RELEASE_DATE)
+
+          $UNRELEASED_CONTENT
+          
+          ### Установка
+          * Загрузите файл VK_Video_Downloader.zip
+          * Распакуйте и запустите VK_Video_Downloader.exe
+          * Приложение не требует установки"
+          
+          # Экранируем специальные символы для GitHub Actions
+          $RELEASE_NOTES = $RELEASE_NOTES -replace "%", "%25" -replace "`n", "%0A" -replace "`r", "" -replace "`"", "%22"
+          echo "::set-output name=release_notes::$RELEASE_NOTES"
+          
+          # Обновляем CHANGELOG.md - добавляем новую версию и перемещаем содержимое из Unreleased
+          $NEW_VERSION_HEADER = "## [${{ steps.update_version.outputs.new_version }}] - $RELEASE_DATE"
+          $UPDATED_CHANGELOG = $CHANGELOG_CONTENT -replace '## \[Unreleased\]', "## [Unreleased]`n`n$NEW_VERSION_HEADER"
+          Set-Content -Path CHANGELOG.md -Value $UPDATED_CHANGELOG
+          echo "CHANGELOG.md обновлен с новой версией $VERSION"
+        } else {
+          # Если раздел [Unreleased] не найден, используем запасной вариант
+          $RELEASE_NOTES = "## Что нового в версии v${{ steps.update_version.outputs.new_version }} ($RELEASE_DATE)
+          
+          ### Установка
+          * Загрузите файл VK_Video_Downloader.zip
+          * Распакуйте и запустите VK_Video_Downloader.exe
+          * Приложение не требует установки"
+          
+          # Экранируем специальные символы для GitHub Actions
+          $RELEASE_NOTES = $RELEASE_NOTES -replace "%", "%25" -replace "`n", "%0A" -replace "`r", "" -replace "`"", "%22"
+          echo "::set-output name=release_notes::$RELEASE_NOTES"
+          
+          echo "Предупреждение: Раздел [Unreleased] не найден в CHANGELOG.md"
+        }
+      shell: pwsh
+      
+    # Коммит обновленных файлов версии и CHANGELOG
+    - name: Commit updates
       run: |
         git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
-        git add version.py
-        git commit -m "Автоматическое обновление версии до ${{ steps.update_version.outputs.new_version }}" || echo "No changes to commit"
+        git add version.py CHANGELOG.md
+        git commit -m "Автоматическое обновление версии до ${{ steps.update_version.outputs.new_version }} и CHANGELOG" || echo "No changes to commit"
       
     - name: Push changes
       # Используем действие push-action вместо git push напрямую
@@ -77,74 +128,6 @@ jobs:
         tag_name: v${{ steps.update_version.outputs.new_version }}
         draft: false
         prerelease: false
-        generate_release_notes: true
+        body: ${{ steps.changelog.outputs.release_notes }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        
-  # Задача для мониторинга загрузок
-  monitor_downloads:
-    needs: build
-    runs-on: ubuntu-latest
-    # Также добавляем разрешения для tasks monitor_downloads
-    permissions:
-      contents: write
-      
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
-      
-      - name: Get download count
-        id: get_downloads
-        run: |
-          # Получаем информацию о загрузках через GitHub API
-          curl -sL https://api.github.com/repos/${{ github.repository }}/releases | \
-          jq '[.[].assets[].download_count] | add' > download_count.txt
-          echo "TOTAL_DOWNLOADS=$(cat download_count.txt)" >> $GITHUB_ENV
-          echo "total_downloads=$(cat download_count.txt)" >> $GITHUB_OUTPUT
-          
-      - name: Update README with download count
-        run: |
-          if [ -f README.md ]; then
-            # Обновляем счетчик в README, если он существует
-            sed -i "s/Загрузок: [0-9]*/Загрузок: ${{ env.TOTAL_DOWNLOADS }}/" README.md
-            git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git config --local user.name "github-actions[bot]"
-            git add README.md
-            git commit -m "Обновление счетчика загрузок: ${{ env.TOTAL_DOWNLOADS }}" || echo "No changes to commit"
-          fi
-          
-      - name: Pull and merge changes
-        run: |
-          git pull --no-rebase origin ${GITHUB_REF#refs/heads/}
-          
-      - name: Push README update
-        uses: ad-m/github-push-action@master
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.ref }}
-          force: true  # Use force push to ensure updates go through
-          
-      - name: Create download statistics report
-        run: |
-          mkdir -p stats
-          echo "# Статистика загрузок VK Video Downloader" > stats/download_stats.md
-          echo "" >> stats/download_stats.md
-          echo "Общее количество загрузок: **${{ env.TOTAL_DOWNLOADS }}**" >> stats/download_stats.md
-          echo "" >> stats/download_stats.md
-          echo "Последнее обновление: $(date '+%Y-%m-%d %H:%M:%S')" >> stats/download_stats.md
-          
-          # Получаем детальную статистику по версиям
-          echo "" >> stats/download_stats.md
-          echo "## Загрузки по версиям" >> stats/download_stats.md
-          echo "" >> stats/download_stats.md
-          curl -sL https://api.github.com/repos/${{ github.repository }}/releases | \
-          jq -r '.[] | "- **" + .tag_name + "**: " + (.assets[].download_count | tostring) + " загрузок"' >> stats/download_stats.md
-          
-      - name: Upload statistics artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: download-statistics
-          path: stats/download_stats.md
